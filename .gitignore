@@ -1,0 +1,89 @@
+# SMIF Dashboard - Security & Privacy
+# DO NOT commit sensitive data to GitHub
+
+# Excel files with real portfolio data
+*.xlsx
+*.xls
+
+# Processed data and results
+data/
+processed_data/
+exports/
+
+# Environment and configuration files
+.env
+config.py
+config_local.py
+
+# Python cache and temporary files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pyenv
+.python-version
+
+# pipenv
+Pipfile.lock
+
+# celery beat schedule file
+celerybeat-schedule
+
+# SageMath parsed files
+*.sage.py
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# MacOS
+.DS_Store
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# VS Code
+.vscode/
+
+# Local data exports
+*.pkl
+*.json
+exports/
+smif_data_*
+SMIF_Analysis_*
+smif_analysis_*
+
+# Backup files
+*.bak
+*.backup
+*~
