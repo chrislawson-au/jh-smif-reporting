@@ -27,10 +27,23 @@ try:
         CLASS_PASSWORD = st.secrets['passwords']['CLASS_PASSWORD']
         APP_TITLE = st.secrets['settings'].get('APP_TITLE', 'SMIF Performance Dashboard')
         INITIAL_PORTFOLIO_VALUE = st.secrets['settings'].get('INITIAL_PORTFOLIO_VALUE', 338400)
+        
+        # Class period configuration
+        CLASS_START_DATE = st.secrets['class_period'].get('CLASS_START_DATE', '2023-09-01')
+        CLASS_END_DATE = st.secrets['class_period'].get('CLASS_END_DATE', None)  # None means current date
+        CLASS_SEMESTER = st.secrets['class_period'].get('CLASS_SEMESTER', 'Current Semester')
+        CLASS_INITIAL_VALUE = st.secrets['class_period'].get('CLASS_INITIAL_VALUE', INITIAL_PORTFOLIO_VALUE)
+        CLASS_BENCHMARK = st.secrets['class_period'].get('CLASS_BENCHMARK', 'VTI')
     else:
         # Fallback to config.py for legacy support (will be deprecated)
         from config import ALLOWED_EMAILS, CLASS_PASSWORD, APP_TITLE, INITIAL_PORTFOLIO_VALUE
         st.warning("⚠️ Using legacy config.py. Please migrate to Streamlit secrets for production deployment.")
+        # Default class period settings for legacy mode
+        CLASS_START_DATE = '2023-09-01'
+        CLASS_END_DATE = None
+        CLASS_SEMESTER = 'Current Semester'
+        CLASS_INITIAL_VALUE = INITIAL_PORTFOLIO_VALUE
+        CLASS_BENCHMARK = 'VTI'
 except (ImportError, KeyError):
     # Demo configuration for testing
     st.error("⚠️ Configuration not found! Please set up .streamlit/secrets.toml or config.py")
@@ -39,6 +52,12 @@ except (ImportError, KeyError):
     CLASS_PASSWORD = "demo123"
     APP_TITLE = "SMIF Dashboard (Demo Mode)"
     INITIAL_PORTFOLIO_VALUE = 338400
+    # Default class period settings for demo mode
+    CLASS_START_DATE = '2023-09-01'
+    CLASS_END_DATE = None
+    CLASS_SEMESTER = 'Demo Semester'
+    CLASS_INITIAL_VALUE = INITIAL_PORTFOLIO_VALUE
+    CLASS_BENCHMARK = 'VTI'
 
 def check_password():
     """Returns True if user has correct email and password."""
@@ -118,8 +137,23 @@ def calcPerfStats(rtns, scale=252):
     df.index = ['AnnRtn', 'AnnStd', 'Sharpe', 'MDD']
     return df, nav, dd
 
+def calculate_portfolio_nav(smifPort, initV, start_date):
+    """Calculate NAV starting from a specific date with specific initial value"""
+    # Filter portfolio data from start_date
+    port_filtered = smifPort.loc[start_date:]
+    
+    # Calculate NAV starting from the specified initial value
+    nav = port_filtered['MktValue'] + port_filtered['Cost'].cumsum() + port_filtered['Cash'].cumsum()
+    
+    # Adjust to start with the specified initial value
+    if len(nav) > 0:
+        nav_adjustment = initV - nav.iloc[0]
+        nav = nav + nav_adjustment
+    
+    return nav
+
 def process_smif_data(transaction_file, income_file):
-    """Process SMIF data and generate reports"""
+    """Process SMIF data and generate reports for both inception-to-date and class period"""
     
     progress_bar = st.progress(0)
     status_text = st.empty()
@@ -166,7 +200,7 @@ def process_smif_data(transaction_file, income_file):
                 df_close[market] = close_data
                 df_rtn[market] = rtn_data
                 df_splits[market] = splits_data
-            progress_bar.progress(0.5 + (i / len(portMkts)) * 0.3)
+            progress_bar.progress(0.5 + (i / len(portMkts)) * 0.2)
         
         df_rtn = df_rtn.loc[np.isnan(df_rtn.sum(axis=1, skipna=False)) == False, :]
         df_close = df_close.loc[df_rtn.index, :]
@@ -174,7 +208,7 @@ def process_smif_data(transaction_file, income_file):
         
         # Process transactions
         status_text.text('Processing transactions...')
-        progress_bar.progress(0.8)
+        progress_bar.progress(0.7)
         reporting_dates = pd.DatetimeIndex(df_rtn['2023-09-14':].index)
         
         smifTrade = smifReport[['D-TRADE','Share/Par Value','A-PRIN-TRD-BSE','Ticker/Option Symbol number']]
@@ -215,8 +249,7 @@ def process_smif_data(transaction_file, income_file):
         
         # Calculate market values and performance
         status_text.text('Calculating performance metrics...')
-        progress_bar.progress(0.9)
-        initV = INITIAL_PORTFOLIO_VALUE
+        progress_bar.progress(0.8)
         MktClose = df_close.loc[positions.index, :]
         MktValue = pd.DataFrame(positions[portMkts].values * MktClose[portMkts].values, 
                                columns=portMkts, index=positions.index)
@@ -234,31 +267,77 @@ def process_smif_data(transaction_file, income_file):
         smifPort['Cost'] = tradeCosts
         smifPort['Cash'] = smif_Income
         smifPort.fillna(0, inplace=True)
-        smifPort.loc['2023-09-14','Cash'] = initV
+        smifPort.loc['2023-09-14','Cash'] = INITIAL_PORTFOLIO_VALUE
         
-        # NAV and returns
-        smifNav = smifPort['MktValue'] + smifPort['Cost'].cumsum() + smifPort['Cash'].cumsum()
-        smifRtn = smifNav.pct_change()
-        smifRtn.fillna(0, inplace=True)
-        smifRtn = pd.DataFrame(smifRtn.values, columns=['SMIF'], index=pd.DatetimeIndex(smifRtn.index))
+        # Calculate inception-to-date NAV and returns
+        status_text.text('Calculating inception-to-date performance...')
+        progress_bar.progress(0.85)
+        inception_nav = calculate_portfolio_nav(smifPort, INITIAL_PORTFOLIO_VALUE, '2023-09-14')
+        inception_returns = inception_nav.pct_change()
+        inception_returns.fillna(0, inplace=True)
+        inception_returns = pd.DataFrame(inception_returns.values, columns=['SMIF'], index=pd.DatetimeIndex(inception_returns.index))
         
-        # Combine with market returns
-        res = smifRtn.join(df_rtn)
-        res = res.iloc[1:, :]  # Start comparing returns from 09/15
-        resNav = (1+res).cumprod()
+        # Calculate class period NAV and returns
+        status_text.text('Calculating class period performance...')
+        progress_bar.progress(0.9)
+        class_start_dt = pd.to_datetime(CLASS_START_DATE)
+        class_end_dt = pd.to_datetime(CLASS_END_DATE) if CLASS_END_DATE else pd.to_datetime('today')
+        
+        # Find the closest available date to class start
+        available_dates = inception_nav.index
+        class_start_actual = available_dates[available_dates >= class_start_dt][0] if any(available_dates >= class_start_dt) else available_dates[0]
+        
+        class_nav = calculate_portfolio_nav(smifPort, CLASS_INITIAL_VALUE, class_start_actual)
+        class_returns = class_nav.pct_change()
+        class_returns.fillna(0, inplace=True)
+        class_returns = pd.DataFrame(class_returns.values, columns=['SMIF'], index=pd.DatetimeIndex(class_returns.index))
+        
+        # Filter class period data
+        class_end_actual = min(class_end_dt, available_dates[-1])
+        class_mask = (class_returns.index >= class_start_actual) & (class_returns.index <= class_end_actual)
+        class_returns_filtered = class_returns.loc[class_mask]
+        class_nav_filtered = class_nav.loc[class_mask]
+        
+        # Combine with benchmark returns for both periods
+        status_text.text('Combining with benchmark data...')
+        progress_bar.progress(0.95)
+        
+        # Inception-to-date analysis
+        inception_combined = inception_returns.join(df_rtn)
+        inception_combined = inception_combined.iloc[1:, :]  # Start from second day
+        inception_nav_combined = (1+inception_combined).cumprod()
+        
+        # Class period analysis  
+        class_combined = class_returns_filtered.join(df_rtn.loc[class_returns_filtered.index])
+        class_combined = class_combined.iloc[1:, :] if len(class_combined) > 1 else class_combined  # Start from second day
+        class_nav_combined = (1+class_combined).cumprod()
         
         progress_bar.progress(1.0)
         status_text.text('Analysis complete!')
         
         return {
-            'returns': res,
-            'nav': resNav,
+            # Inception-to-date data
+            'returns': inception_combined,
+            'nav': inception_nav_combined,
             'positions': positions,
             'market_values': MktValue,
             'weights': weights,
             'portfolio_summary': smifPort,
             'trade_costs': tradeCosts,
-            'port_mkts': portMkts
+            'port_mkts': portMkts,
+            
+            # Class period data
+            'class_returns': class_combined,
+            'class_nav': class_nav_combined,
+            'class_start_date': class_start_actual,
+            'class_end_date': class_end_actual,
+            'class_semester': CLASS_SEMESTER,
+            'class_initial_value': CLASS_INITIAL_VALUE,
+            
+            # Filter class period positions and weights
+            'class_positions': positions.loc[class_mask] if any(class_mask) else positions.iloc[:0],
+            'class_weights': weights.loc[class_mask] if any(class_mask) else weights.iloc[:0],
+            'class_market_values': MktValue.loc[class_mask] if any(class_mask) else MktValue.iloc[:0],
         }
         
     except Exception as e:
@@ -403,11 +482,45 @@ def main():
         
         results = st.session_state['results']
         
+        # Time period selector
+        period_col1, period_col2 = st.columns([2, 1])
+        with period_col1:
+            analysis_period = st.selectbox(
+                "📅 Analysis Period",
+                ["Class Period", "Inception to Date"],
+                help=f"Choose between class period ({results.get('class_semester', 'Current Semester')}) or full inception-to-date analysis"
+            )
+        
+        with period_col2:
+            if analysis_period == "Class Period" and 'class_start_date' in results:
+                st.info(f"📚 **{results['class_semester']}**\n\n"
+                       f"From: {results['class_start_date'].strftime('%Y-%m-%d')}\n\n"
+                       f"To: {results['class_end_date'].strftime('%Y-%m-%d')}")
+            elif analysis_period == "Inception to Date":
+                st.info(f"📈 **Full Portfolio History**\n\n"
+                       f"From: 2023-09-14\n\n"
+                       f"To: {results['nav'].index[-1].strftime('%Y-%m-%d')}")
+        
+        # Select data based on period
+        if analysis_period == "Class Period" and 'class_returns' in results and not results['class_returns'].empty:
+            current_returns = results['class_returns']
+            current_nav = results['class_nav']
+            current_weights = results['class_weights'] if not results['class_weights'].empty else results['weights']
+            current_positions = results['class_positions'] if not results['class_positions'].empty else results['positions']
+            period_label = results['class_semester']
+        else:
+            current_returns = results['returns']
+            current_nav = results['nav']
+            current_weights = results['weights']
+            current_positions = results['positions']
+            period_label = "Inception to Date"
+        
         # Performance metrics
+        st.subheader(f"📊 Key Metrics - {period_label}")
         col1, col2, col3, col4 = st.columns(4)
         
-        if 'SMIF' in results['returns'].columns and 'VTI' in results['returns'].columns:
-            perf_stats, _, dd = calcPerfStats(results['returns'][['SMIF', 'VTI']])
+        if 'SMIF' in current_returns.columns and 'VTI' in current_returns.columns and len(current_returns) > 1:
+            perf_stats, _, dd = calcPerfStats(current_returns[['SMIF', 'VTI']])
             
             with col1:
                 st.metric(
@@ -434,23 +547,54 @@ def main():
                     "Max Drawdown", 
                     f"{perf_stats.loc['MDD', 'SMIF']:.2%}"
                 )
+        else:
+            st.warning("⚠️ Insufficient data for the selected period. Please choose a different time range or upload more recent data.")
         
         # Charts
         tab1, tab2, tab3, tab4 = st.tabs(["📊 Performance", "🥧 Allocation", "📉 Drawdown", "📋 Data"])
         
         with tab1:
-            st.subheader("Cumulative Performance vs VTI")
-            if 'SMIF' in results['nav'].columns and 'VTI' in results['nav'].columns:
-                chart_data = results['nav'][['SMIF', 'VTI']].copy()
+            st.subheader(f"Cumulative Performance vs VTI - {period_label}")
+            if 'SMIF' in current_nav.columns and 'VTI' in current_nav.columns and len(current_nav) > 1:
+                chart_data = current_nav[['SMIF', 'VTI']].copy()
                 st.line_chart(chart_data, height=400)
+                
+                # Add comparison view option
+                if analysis_period == "Class Period" and 'returns' in results:
+                    if st.checkbox("📈 Compare with Inception-to-Date Performance"):
+                        st.subheader("Performance Comparison: Class Period vs Inception-to-Date")
+                        
+                        # Create comparison chart
+                        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+                        
+                        # Class period chart
+                        ax1.plot(current_nav.index, current_nav['SMIF'], label='SMIF', linewidth=2)
+                        ax1.plot(current_nav.index, current_nav['VTI'], label='VTI', linewidth=2)
+                        ax1.set_title(f'{period_label} Performance')
+                        ax1.set_ylabel('Cumulative Return')
+                        ax1.legend()
+                        ax1.grid(True, alpha=0.3)
+                        
+                        # Inception-to-date chart
+                        ax2.plot(results['nav'].index, results['nav']['SMIF'], label='SMIF', linewidth=2)
+                        ax2.plot(results['nav'].index, results['nav']['VTI'], label='VTI', linewidth=2)
+                        ax2.set_title('Inception-to-Date Performance')
+                        ax2.set_ylabel('Cumulative Return')
+                        ax2.legend()
+                        ax2.grid(True, alpha=0.3)
+                        
+                        plt.tight_layout()
+                        st.pyplot(fig)
+            else:
+                st.warning("⚠️ Insufficient data for performance chart in the selected period.")
             
             # Regression analysis
-            if 'SMIF' in results['returns'].columns and 'VTI' in results['returns'].columns:
-                st.subheader("SMIF vs VTI Regression")
+            if 'SMIF' in current_returns.columns and 'VTI' in current_returns.columns and len(current_returns) > 5:
+                st.subheader(f"SMIF vs VTI Regression - {period_label}")
                 fig, ax = plt.subplots(figsize=(10, 6))
                 
-                x_data = results['returns']['VTI']
-                y_data = results['returns']['SMIF']
+                x_data = current_returns['VTI']
+                y_data = current_returns['SMIF']
                 
                 ax.scatter(x_data, y_data, alpha=0.6)
                 
@@ -461,7 +605,7 @@ def main():
                 
                 ax.set_xlabel('VTI Returns')
                 ax.set_ylabel('SMIF Returns')
-                ax.set_title('SMIF vs VTI Scatter Plot')
+                ax.set_title(f'SMIF vs VTI Scatter Plot - {period_label}')
                 ax.legend()
                 ax.grid(True, alpha=0.3)
                 
@@ -475,41 +619,142 @@ def main():
                     st.metric("Beta", f"{model.params[1]:.4f}")
                 with col3:
                     st.metric("R-squared", f"{model.rsquared:.3f}")
+            else:
+                st.warning("⚠️ Insufficient data for regression analysis in the selected period (minimum 5 observations required).")
         
         with tab2:
-            st.subheader("Current Portfolio Allocation")
-            if not results['weights'].empty:
-                latest_weights = results['weights'].iloc[-1]
+            st.subheader(f"Portfolio Allocation - {period_label}")
+            if not current_weights.empty:
+                latest_weights = current_weights.iloc[-1]
                 latest_weights = latest_weights[latest_weights > 0].sort_values(ascending=False)
                 
                 # Pie chart
                 fig, ax = plt.subplots(figsize=(10, 8))
                 ax.pie(latest_weights.values, labels=latest_weights.index, autopct='%1.1f%%', startangle=90)
-                ax.set_title('Current Portfolio Allocation')
+                ax.set_title(f'Portfolio Allocation - {period_label}')
                 st.pyplot(fig)
                 
                 # Table
                 st.subheader("Allocation Details")
+                # Use the appropriate market values based on period
+                if analysis_period == "Class Period" and 'class_market_values' in results and not results['class_market_values'].empty:
+                    market_vals = results['class_market_values'].iloc[-1]
+                else:
+                    market_vals = results['market_values'].iloc[-1]
+                
                 allocation_df = pd.DataFrame({
                     'Ticker': latest_weights.index,
                     'Weight': [f"{w:.2%}" for w in latest_weights.values],
-                    'Market Value': [f"${results['market_values'].iloc[-1][ticker]:,.0f}" for ticker in latest_weights.index]
+                    'Market Value': [f"${market_vals[ticker]:,.0f}" if ticker in market_vals.index else "N/A" for ticker in latest_weights.index]
                 })
                 st.dataframe(allocation_df, use_container_width=True)
+                
+                # Period comparison for allocation
+                if analysis_period == "Class Period" and st.checkbox("📊 Compare Allocation Over Time"):
+                    st.subheader("Allocation Evolution During Class Period")
+                    
+                    # Create time series of top holdings
+                    top_tickers = latest_weights.head(5).index.tolist()
+                    fig, ax = plt.subplots(figsize=(12, 6))
+                    
+                    for ticker in top_tickers:
+                        if ticker in current_weights.columns:
+                            ax.plot(current_weights.index, current_weights[ticker], label=ticker, linewidth=2)
+                    
+                    ax.set_title(f'Top 5 Holdings Weight Evolution - {period_label}')
+                    ax.set_ylabel('Portfolio Weight')
+                    ax.set_xlabel('Date')
+                    ax.legend()
+                    ax.grid(True, alpha=0.3)
+                    
+                    plt.tight_layout()
+                    st.pyplot(fig)
+            else:
+                st.warning("⚠️ No allocation data available for the selected period.")
         
         with tab3:
-            st.subheader("Drawdown Analysis")
-            if 'SMIF' in results['returns'].columns and 'VTI' in results['returns'].columns:
-                _, _, dd = calcPerfStats(results['returns'][['SMIF', 'VTI']])
+            st.subheader(f"Drawdown Analysis - {period_label}")
+            if 'SMIF' in current_returns.columns and 'VTI' in current_returns.columns and len(current_returns) > 1:
+                _, _, dd = calcPerfStats(current_returns[['SMIF', 'VTI']])
                 st.line_chart(dd[['SMIF', 'VTI']], height=400)
+                
+                # Drawdown statistics
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.subheader("SMIF Drawdown Stats")
+                    max_dd = dd['SMIF'].min()
+                    current_dd = dd['SMIF'].iloc[-1]
+                    st.metric("Maximum Drawdown", f"{max_dd:.2%}")
+                    st.metric("Current Drawdown", f"{current_dd:.2%}")
+                    
+                    # Count drawdown periods
+                    drawdown_periods = (dd['SMIF'] < -0.01).sum()  # Periods with >1% drawdown
+                    st.metric("Days with >1% Drawdown", f"{drawdown_periods}")
+                
+                with col2:
+                    st.subheader("VTI Drawdown Stats") 
+                    max_dd_vti = dd['VTI'].min()
+                    current_dd_vti = dd['VTI'].iloc[-1]
+                    st.metric("Maximum Drawdown", f"{max_dd_vti:.2%}")
+                    st.metric("Current Drawdown", f"{current_dd_vti:.2%}")
+                    
+                    drawdown_periods_vti = (dd['VTI'] < -0.01).sum()
+                    st.metric("Days with >1% Drawdown", f"{drawdown_periods_vti}")
+            else:
+                st.warning("⚠️ Insufficient data for drawdown analysis in the selected period.")
         
         with tab4:
             st.subheader("📊 Data Export Hub")
             st.write("Export your data for advanced analysis in Jupyter, Colab, Excel, or Google Sheets")
             
+            # Period selection for export
+            export_period = st.selectbox(
+                "📅 Export Data Period",
+                ["Both Periods", "Class Period Only", "Inception-to-Date Only"],
+                help="Choose which time period data to include in exports"
+            )
+            
+            # Prepare data based on export selection
+            if export_period == "Class Period Only" and 'class_returns' in results:
+                export_results = {
+                    'returns': results['class_returns'],
+                    'nav': results['class_nav'],
+                    'positions': results['class_positions'],
+                    'market_values': results['class_market_values'],
+                    'weights': results['class_weights'],
+                    'portfolio_summary': results['portfolio_summary'],
+                    'trade_costs': results['trade_costs'],
+                    'port_mkts': results['port_mkts']
+                }
+                period_suffix = f"_{results['class_semester'].replace(' ', '_')}"
+            elif export_period == "Inception-to-Date Only":
+                export_results = {
+                    'returns': results['returns'],
+                    'nav': results['nav'],
+                    'positions': results['positions'],
+                    'market_values': results['market_values'],
+                    'weights': results['weights'],
+                    'portfolio_summary': results['portfolio_summary'],
+                    'trade_costs': results['trade_costs'],
+                    'port_mkts': results['port_mkts']
+                }
+                period_suffix = "_InceptionToDate"
+            else:
+                export_results = results  # Include all data
+                period_suffix = "_Complete"
+            
             # Initialize exporter
             metadata = data_manager.get_metadata() or {}
-            exporter = SMIFDataExporter(results, metadata)
+            # Add class period info to metadata
+            if 'class_semester' in results:
+                metadata['class_period'] = {
+                    'semester': results['class_semester'],
+                    'start_date': results['class_start_date'].strftime('%Y-%m-%d'),
+                    'end_date': results['class_end_date'].strftime('%Y-%m-%d'),
+                    'initial_value': results['class_initial_value']
+                }
+            
+            exporter = SMIFDataExporter(export_results, metadata)
             
             # Export format selection
             st.subheader("🎯 Choose Export Format")
@@ -524,9 +769,9 @@ def main():
                 st.download_button(
                     label="📗 Download Excel Workbook",
                     data=excel_data,
-                    file_name=f"SMIF_Analysis_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                    file_name=f"SMIF_Analysis{period_suffix}_{datetime.now().strftime('%Y%m%d')}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    help="Complete dataset in Excel format with multiple sheets"
+                    help=f"Complete dataset in Excel format ({export_period.lower()})"
                 )
                 
                 # CSV package download
@@ -534,9 +779,9 @@ def main():
                 st.download_button(
                     label="📦 Download CSV Package",
                     data=csv_package,
-                    file_name=f"SMIF_Data_{datetime.now().strftime('%Y%m%d')}.zip",
+                    file_name=f"SMIF_Data{period_suffix}_{datetime.now().strftime('%Y%m%d')}.zip",
                     mime="application/zip",
-                    help="ZIP file containing all data as separate CSV files"
+                    help=f"ZIP file containing data as separate CSV files ({export_period.lower()})"
                 )
             
             with col2:
@@ -547,9 +792,9 @@ def main():
                 st.download_button(
                     label="🥒 Download Python Data (Pickle)",
                     data=pickle_data,
-                    file_name=f"smif_data_{datetime.now().strftime('%Y%m%d')}.pkl",
+                    file_name=f"smif_data{period_suffix}_{datetime.now().strftime('%Y%m%d')}.pkl",
                     mime="application/octet-stream",
-                    help="Python objects for direct loading in Jupyter/Colab"
+                    help=f"Python objects for direct loading in Jupyter/Colab ({export_period.lower()})"
                 )
                 
                 # JSON download
@@ -557,9 +802,9 @@ def main():
                 st.download_button(
                     label="📄 Download JSON Data",
                     data=json_data,
-                    file_name=f"smif_data_{datetime.now().strftime('%Y%m%d')}.json",
+                    file_name=f"smif_data{period_suffix}_{datetime.now().strftime('%Y%m%d')}.json",
                     mime="application/json",
-                    help="JSON format for web applications or other tools"
+                    help=f"JSON format for web applications or other tools ({export_period.lower()})"
                 )
             
             st.markdown("---")
@@ -608,27 +853,32 @@ def main():
             st.markdown("---")
             
             # Quick data preview
-            st.subheader("👀 Quick Data Preview")
+            st.subheader(f"👀 Quick Data Preview - {export_period}")
             
             preview_tabs = st.tabs(["📈 Returns", "💰 Positions", "⚖️ Weights", "📊 Summary"])
             
             with preview_tabs[0]:
-                if not results['returns'].empty:
-                    st.dataframe(results['returns'].tail(10).round(4), use_container_width=True)
+                if not export_results['returns'].empty:
+                    preview_returns = export_results['returns'].tail(10).round(4)
+                    st.dataframe(preview_returns, use_container_width=True)
+                    if export_period == "Both Periods" and 'class_returns' in results:
+                        st.caption(f"Showing last 10 days of inception-to-date data. Class period has {len(results['class_returns'])} observations.")
             
             with preview_tabs[1]:
-                if not results['positions'].empty:
-                    st.dataframe(results['positions'].tail(5).round(2), use_container_width=True)
+                if not export_results['positions'].empty:
+                    preview_positions = export_results['positions'].tail(5).round(2)
+                    st.dataframe(preview_positions, use_container_width=True)
             
             with preview_tabs[2]:
-                if not results['weights'].empty:
-                    latest_weights = results['weights'].iloc[-1]
+                if not export_results['weights'].empty:
+                    latest_weights = export_results['weights'].iloc[-1]
                     latest_weights = latest_weights[latest_weights > 0.01].sort_values(ascending=False)
                     st.dataframe(latest_weights.to_frame('Weight').round(3), use_container_width=True)
             
             with preview_tabs[3]:
-                if not results['portfolio_summary'].empty:
-                    st.dataframe(results['portfolio_summary'].tail(5).round(2), use_container_width=True)
+                if not export_results['portfolio_summary'].empty:
+                    preview_summary = export_results['portfolio_summary'].tail(5).round(2)
+                    st.dataframe(preview_summary, use_container_width=True)
     
     else:
         st.info("👆 Please upload the required Excel files to generate reports.")

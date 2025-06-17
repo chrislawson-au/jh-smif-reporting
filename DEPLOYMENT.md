@@ -36,6 +36,12 @@ CLASS_PASSWORD = "YourSecureClassPassword2024"
 [settings]
 APP_TITLE = "SMIF Performance Dashboard"
 INITIAL_PORTFOLIO_VALUE = 338400
+
+[class_period]
+CLASS_START_DATE = "2024-01-15"  # First day of class semester (YYYY-MM-DD)
+CLASS_END_DATE = "2024-05-15"    # Last day of class semester (optional, uses current date if not set)
+CLASS_SEMESTER = "Spring 2024"   # Semester label for display
+CLASS_INITIAL_VALUE = 338400     # Portfolio value at start of class (can be different from inception)
 ```
 
 3. **Save and Restart**: The app will automatically restart with secure authentication
@@ -56,6 +62,12 @@ CLASS_PASSWORD = "local_dev_password"
 [settings]
 APP_TITLE = "SMIF Dashboard - Local Dev"
 INITIAL_PORTFOLIO_VALUE = 338400
+
+[class_period]
+CLASS_START_DATE = "2024-01-15"  # Update for current semester
+CLASS_END_DATE = "2024-05-15"    # Optional
+CLASS_SEMESTER = "Spring 2024"   # Update semester name
+CLASS_INITIAL_VALUE = 338400     # Starting value for class period
 ```
 
 Then run locally:
@@ -81,6 +93,37 @@ streamlit run streamlit_app.py
 - Use strong passwords (8+ characters, mixed case, numbers, symbols)
 - Distribute password securely to enrolled students only
 
+### Class Period Configuration:
+The dashboard now supports dual analytics: **Class Period** vs **Inception-to-Date**
+
+#### Required Parameters:
+- **CLASS_START_DATE**: First day of semester (YYYY-MM-DD format)
+- **CLASS_SEMESTER**: Display name (e.g., "Spring 2024", "Fall 2024")
+- **CLASS_INITIAL_VALUE**: Portfolio value at start of class
+
+#### Optional Parameters:
+- **CLASS_END_DATE**: Last day of semester (uses current date if omitted)
+
+#### Each Semester Setup:
+1. **Update CLASS_START_DATE** to first day of new semester
+2. **Update CLASS_SEMESTER** name for display
+3. **Update CLASS_INITIAL_VALUE** to portfolio value at semester start
+4. **Update CLASS_END_DATE** for completed semesters (optional)
+5. **Change CLASS_PASSWORD** for security
+
+#### Example Semester Transitions:
+```toml
+# Spring 2024
+CLASS_START_DATE = "2024-01-15"
+CLASS_END_DATE = "2024-05-15"
+CLASS_SEMESTER = "Spring 2024"
+
+# Fall 2024 (new semester)
+CLASS_START_DATE = "2024-08-26"
+CLASS_END_DATE = ""  # Leave empty for ongoing semester
+CLASS_SEMESTER = "Fall 2024"
+```
+
 ## 📊 How to Use the Dashboard
 
 ### All Authorized Users:
@@ -96,9 +139,11 @@ streamlit run streamlit_app.py
    - Data export capabilities
 
 ### Key Features:
+- **Dual Period Analytics**: Compare class period performance vs inception-to-date
 - **Real-time Processing**: Data processed instantly, no permanent storage
 - **Interactive Charts**: Performance, allocation, and drawdown visualizations  
-- **Data Export**: Download as Excel, CSV, JSON, or Python pickle files
+- **Period Selection**: Switch between class period and full history analysis
+- **Data Export**: Download data filtered by time period (class, inception, or both)
 - **Jupyter Integration**: Export templates for advanced analysis
 
 ## 🔧 Customization
