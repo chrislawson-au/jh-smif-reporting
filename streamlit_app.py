@@ -29,7 +29,7 @@ try:
         INITIAL_PORTFOLIO_VALUE = st.secrets['settings'].get('INITIAL_PORTFOLIO_VALUE', 338400)
         
         # Class period configuration
-        CLASS_START_DATE = st.secrets['class_period'].get('CLASS_START_DATE', '2023-09-01')
+        CLASS_START_DATE = st.secrets['class_period'].get('CLASS_START_DATE', '2023-09-14')  # Match portfolio start
         CLASS_END_DATE = st.secrets['class_period'].get('CLASS_END_DATE', None)  # None means current date
         CLASS_SEMESTER = st.secrets['class_period'].get('CLASS_SEMESTER', 'Current Semester')
         CLASS_INITIAL_VALUE = st.secrets['class_period'].get('CLASS_INITIAL_VALUE', INITIAL_PORTFOLIO_VALUE)
@@ -39,7 +39,7 @@ try:
         from config import ALLOWED_EMAILS, CLASS_PASSWORD, APP_TITLE, INITIAL_PORTFOLIO_VALUE
         st.warning("⚠️ Using legacy config.py. Please migrate to Streamlit secrets for production deployment.")
         # Default class period settings for legacy mode
-        CLASS_START_DATE = '2023-09-01'
+        CLASS_START_DATE = '2023-09-14'  # Match the actual portfolio start date
         CLASS_END_DATE = None
         CLASS_SEMESTER = 'Current Semester'
         CLASS_INITIAL_VALUE = INITIAL_PORTFOLIO_VALUE
@@ -53,7 +53,7 @@ except (ImportError, KeyError):
     APP_TITLE = "SMIF Dashboard (Demo Mode)"
     INITIAL_PORTFOLIO_VALUE = 338400
     # Default class period settings for demo mode
-    CLASS_START_DATE = '2023-09-01'
+    CLASS_START_DATE = '2023-09-14'  # Match the actual portfolio start date
     CLASS_END_DATE = None
     CLASS_SEMESTER = 'Demo Semester'
     CLASS_INITIAL_VALUE = INITIAL_PORTFOLIO_VALUE
@@ -285,12 +285,32 @@ def process_smif_data(transaction_file, income_file):
         
         # Find the closest available date to class start
         available_dates = inception_nav.index
-        class_start_actual = available_dates[available_dates >= class_start_dt][0] if any(available_dates >= class_start_dt) else available_dates[0]
         
-        class_nav = calculate_portfolio_nav(smifPort, CLASS_INITIAL_VALUE, class_start_actual)
-        class_returns = class_nav.pct_change()
-        class_returns.fillna(0, inplace=True)
-        class_returns = pd.DataFrame(class_returns.values, columns=['SMIF'], index=pd.DatetimeIndex(class_returns.index))
+        # Safety check: ensure we have data for the requested period
+        if class_start_dt > available_dates[-1]:
+            # Class start is after all available data - use the last available date
+            class_start_actual = available_dates[-1]
+            st.warning(f"⚠️ Class start date ({CLASS_START_DATE}) is after available data. Using {class_start_actual.strftime('%Y-%m-%d')} instead.")
+        elif class_start_dt < available_dates[0]:
+            # Class start is before available data - use the first available date
+            class_start_actual = available_dates[0]
+            st.warning(f"⚠️ Class start date ({CLASS_START_DATE}) is before available data. Using {class_start_actual.strftime('%Y-%m-%d')} instead.")
+        else:
+            # Find the closest business day on or after class start
+            future_dates = available_dates[available_dates >= class_start_dt]
+            class_start_actual = future_dates[0] if len(future_dates) > 0 else available_dates[-1]
+        
+        try:
+            class_nav = calculate_portfolio_nav(smifPort, CLASS_INITIAL_VALUE, class_start_actual)
+            class_returns = class_nav.pct_change()
+            class_returns.fillna(0, inplace=True)
+            class_returns = pd.DataFrame(class_returns.values, columns=['SMIF'], index=pd.DatetimeIndex(class_returns.index))
+        except Exception as e:
+            st.error(f"Error calculating class period performance: {str(e)}")
+            # Fallback to inception data
+            class_nav = inception_nav.copy()
+            class_returns = inception_returns.copy()
+            class_start_actual = available_dates[0]
         
         # Filter class period data
         class_end_actual = min(class_end_dt, available_dates[-1])
@@ -311,6 +331,19 @@ def process_smif_data(transaction_file, income_file):
         class_combined = class_returns_filtered.join(df_rtn.loc[class_returns_filtered.index])
         class_combined = class_combined.iloc[1:, :] if len(class_combined) > 1 else class_combined  # Start from second day
         class_nav_combined = (1+class_combined).cumprod()
+        
+        # Create masks for positions, weights, and market values (which have different indices)
+        # Ensure we have valid data before creating masks
+        try:
+            positions_mask = (positions.index >= class_start_actual) & (positions.index <= class_end_actual)
+            weights_mask = (weights.index >= class_start_actual) & (weights.index <= class_end_actual)
+            mktvalue_mask = (MktValue.index >= class_start_actual) & (MktValue.index <= class_end_actual)
+        except Exception as e:
+            st.warning(f"Issue with class period filtering: {str(e)}. Using full dataset.")
+            # Create empty masks as fallback
+            positions_mask = pd.Series([False] * len(positions), index=positions.index)
+            weights_mask = pd.Series([False] * len(weights), index=weights.index)
+            mktvalue_mask = pd.Series([False] * len(MktValue), index=MktValue.index)
         
         progress_bar.progress(1.0)
         status_text.text('Analysis complete!')
@@ -334,10 +367,10 @@ def process_smif_data(transaction_file, income_file):
             'class_semester': CLASS_SEMESTER,
             'class_initial_value': CLASS_INITIAL_VALUE,
             
-            # Filter class period positions and weights
-            'class_positions': positions.loc[class_mask] if any(class_mask) else positions.iloc[:0],
-            'class_weights': weights.loc[class_mask] if any(class_mask) else weights.iloc[:0],
-            'class_market_values': MktValue.loc[class_mask] if any(class_mask) else MktValue.iloc[:0],
+            # Filter class period positions and weights with appropriate masks
+            'class_positions': positions.loc[positions_mask] if any(positions_mask) else positions.iloc[:0],
+            'class_weights': weights.loc[weights_mask] if any(weights_mask) else weights.iloc[:0],
+            'class_market_values': MktValue.loc[mktvalue_mask] if any(mktvalue_mask) else MktValue.iloc[:0],
         }
         
     except Exception as e:
