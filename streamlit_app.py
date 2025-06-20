@@ -122,6 +122,28 @@ def importYahooData(market, startdate='2023-09-01', enddate=None):
         st.error(f"Error downloading data for {market}: {str(e)}")
         return None, None, None, None
 
+def importMonthlyData(market, years=5):
+    """Import monthly data from Yahoo Finance for Treynor-Black analysis"""
+    try:
+        end_date = pd.to_datetime('today')
+        start_date = end_date - pd.DateOffset(years=years)
+        
+        # Download data
+        datax = yf.download(market, interval='1mo', start=start_date, end=end_date, actions=True)
+        
+        if datax.empty:
+            return None
+            
+        datax.index = pd.DatetimeIndex(datax.index)
+        
+        # Calculate monthly returns using adjusted close
+        datax['Monthly_Return'] = datax['Adj Close'].pct_change()
+        
+        return datax['Monthly_Return'].dropna()
+        
+    except Exception as e:
+        return None
+
 def calcPerfStats(rtns, scale=252):
     """Calculate performance statistics"""
     n = len(rtns.index)
@@ -151,6 +173,107 @@ def calculate_portfolio_nav(smifPort, initV, start_date):
         nav = nav + nav_adjustment
     
     return nav
+
+def calculate_treynor_black_weights(port_mkts, years=5):
+    """Calculate Treynor-Black model target weights using monthly data"""
+    
+    # Download VTI monthly data first
+    vti_returns = importMonthlyData('VTI', years)
+    if vti_returns is None or len(vti_returns) < 12:
+        return None, "Insufficient VTI data for analysis"
+    
+    # Initialize results dictionary
+    tb_results = {
+        'ticker': [],
+        'alpha': [],
+        'beta': [],
+        'mse': [],
+        'alpha_mse': [],
+        'raw_weight': [],
+        'normalized_weight': []
+    }
+    
+    # Calculate statistics for each stock
+    valid_tickers = []
+    for ticker in port_mkts:
+        if ticker == 'NTPXX':  # Skip money market fund
+            continue
+            
+        # Download monthly returns
+        stock_returns = importMonthlyData(ticker, years)
+        
+        if stock_returns is None or len(stock_returns) < 12:
+            continue
+        
+        # Align the data
+        aligned_data = pd.DataFrame({
+            'stock': stock_returns,
+            'vti': vti_returns
+        }).dropna()
+        
+        if len(aligned_data) < 12:  # Need at least 12 months
+            continue
+        
+        # Run regression
+        X = sm.add_constant(aligned_data['vti'])
+        y = aligned_data['stock']
+        
+        try:
+            model = sm.OLS(y, X).fit()
+            
+            # Extract statistics
+            alpha = model.params[0] * 12  # Annualize alpha (monthly to annual)
+            beta = model.params[1]
+            mse = model.mse_resid  # Mean squared error of residuals
+            
+            # Calculate alpha/MSE ratio
+            alpha_mse = alpha / mse if mse > 0 else 0
+            
+            tb_results['ticker'].append(ticker)
+            tb_results['alpha'].append(alpha)
+            tb_results['beta'].append(beta)
+            tb_results['mse'].append(mse)
+            tb_results['alpha_mse'].append(alpha_mse)
+            tb_results['raw_weight'].append(alpha_mse)
+            
+            valid_tickers.append(ticker)
+            
+        except Exception as e:
+            continue
+    
+    # Calculate normalized weights
+    if tb_results['raw_weight']:
+        # Only consider positive alpha/MSE ratios for long positions
+        positive_weights = [max(0, w) for w in tb_results['raw_weight']]
+        total_positive = sum(positive_weights)
+        
+        if total_positive > 0:
+            tb_results['normalized_weight'] = [w / total_positive for w in positive_weights]
+        else:
+            # If no positive weights, equal weight
+            n = len(tb_results['ticker'])
+            tb_results['normalized_weight'] = [1.0 / n] * n
+    
+    # Create DataFrame
+    tb_df = pd.DataFrame(tb_results)
+    
+    # Sort by normalized weight descending
+    tb_df = tb_df.sort_values('normalized_weight', ascending=False)
+    
+    # Calculate covariance matrix of returns
+    returns_data = pd.DataFrame()
+    for ticker in valid_tickers:
+        stock_returns = importMonthlyData(ticker, years)
+        if stock_returns is not None:
+            returns_data[ticker] = stock_returns
+    
+    # Align all returns
+    returns_data = returns_data.dropna()
+    
+    # Calculate covariance matrix (annualized)
+    cov_matrix = returns_data.cov() * 12  # Annualize covariance
+    
+    return tb_df, cov_matrix
 
 def process_smif_data(transaction_file, income_file):
     """Process SMIF data and generate reports for both inception-to-date and class period"""
@@ -702,6 +825,179 @@ def main():
                     
                     plt.tight_layout()
                     st.pyplot(fig)
+                
+                # Treynor-Black Model Target Allocation
+                st.markdown("---")
+                st.subheader("🎯 Treynor-Black Model Target Allocation")
+                st.write("Optimal portfolio weights based on 5 years of monthly data using alpha/MSE ratios")
+                
+                if 'port_mkts' in results:
+                    with st.spinner('Calculating Treynor-Black weights...'):
+                        tb_weights, cov_matrix = calculate_treynor_black_weights(results['port_mkts'])
+                        
+                        if tb_weights is not None and not tb_weights.empty:
+                            # Display metrics
+                            col1, col2, col3 = st.columns(3)
+                            
+                            with col1:
+                                st.metric(
+                                    "Stocks Analyzed", 
+                                    len(tb_weights),
+                                    help="Number of stocks with sufficient data for analysis"
+                                )
+                            
+                            with col2:
+                                positive_alpha = (tb_weights['alpha'] > 0).sum()
+                                st.metric(
+                                    "Positive Alpha Stocks", 
+                                    positive_alpha,
+                                    help="Stocks with positive alpha vs VTI"
+                                )
+                            
+                            with col3:
+                                # Portfolio beta (weighted average)
+                                portfolio_beta = (tb_weights['beta'] * tb_weights['normalized_weight']).sum()
+                                st.metric(
+                                    "Target Portfolio Beta", 
+                                    f"{portfolio_beta:.2f}",
+                                    help="Weighted average beta of target portfolio"
+                                )
+                            
+                            # Display the weights table
+                            st.subheader("Target Weights Analysis")
+                            
+                            # Format the dataframe for display
+                            display_df = tb_weights.copy()
+                            display_df['Alpha (Annual)'] = display_df['alpha'].apply(lambda x: f"{x:.2%}")
+                            display_df['Beta'] = display_df['beta'].apply(lambda x: f"{x:.3f}")
+                            display_df['MSE'] = display_df['mse'].apply(lambda x: f"{x:.4f}")
+                            display_df['Alpha/MSE'] = display_df['alpha_mse'].apply(lambda x: f"{x:.4f}")
+                            display_df['Target Weight'] = display_df['normalized_weight'].apply(lambda x: f"{x:.2%}")
+                            
+                            # Compare with current weights
+                            current_weight_dict = latest_weights.to_dict()
+                            display_df['Current Weight'] = display_df['ticker'].apply(
+                                lambda x: f"{current_weight_dict.get(x, 0):.2%}"
+                            )
+                            display_df['Weight Difference'] = display_df.apply(
+                                lambda row: f"{row['normalized_weight'] - current_weight_dict.get(row['ticker'], 0):.2%}", 
+                                axis=1
+                            )
+                            
+                            # Select columns to display
+                            columns_to_show = ['ticker', 'Alpha (Annual)', 'Beta', 'MSE', 'Alpha/MSE', 
+                                             'Target Weight', 'Current Weight', 'Weight Difference']
+                            
+                            st.dataframe(
+                                display_df[columns_to_show],
+                                use_container_width=True,
+                                height=400
+                            )
+                            
+                            # Visualization of target vs current weights
+                            if len(tb_weights) > 0:
+                                st.subheader("Target vs Current Allocation Comparison")
+                                
+                                # Prepare data for comparison chart
+                                comparison_tickers = tb_weights['ticker'].tolist()
+                                target_weights = tb_weights['normalized_weight'].tolist()
+                                current_weights_list = [current_weight_dict.get(ticker, 0) for ticker in comparison_tickers]
+                                
+                                # Create comparison bar chart
+                                fig, ax = plt.subplots(figsize=(12, 6))
+                                
+                                x = np.arange(len(comparison_tickers))
+                                width = 0.35
+                                
+                                bars1 = ax.bar(x - width/2, current_weights_list, width, label='Current', alpha=0.8)
+                                bars2 = ax.bar(x + width/2, target_weights, width, label='Treynor-Black Target', alpha=0.8)
+                                
+                                ax.set_xlabel('Stock')
+                                ax.set_ylabel('Portfolio Weight')
+                                ax.set_title('Current vs Treynor-Black Target Allocation')
+                                ax.set_xticks(x)
+                                ax.set_xticklabels(comparison_tickers, rotation=45, ha='right')
+                                ax.legend()
+                                ax.grid(True, alpha=0.3, axis='y')
+                                
+                                # Add percentage labels on bars
+                                for bars in [bars1, bars2]:
+                                    for bar in bars:
+                                        height = bar.get_height()
+                                        if height > 0.01:  # Only label if > 1%
+                                            ax.annotate(f'{height:.1%}',
+                                                      xy=(bar.get_x() + bar.get_width() / 2, height),
+                                                      xytext=(0, 3),  # 3 points vertical offset
+                                                      textcoords="offset points",
+                                                      ha='center', va='bottom',
+                                                      fontsize=8)
+                                
+                                plt.tight_layout()
+                                st.pyplot(fig)
+                            
+                            # Display covariance matrix in expander
+                            with st.expander("📊 View Covariance Matrix (Annualized)"):
+                                st.write("Annualized covariance matrix of monthly returns")
+                                
+                                # Format covariance matrix for display
+                                cov_display = cov_matrix.copy()
+                                cov_display = cov_display.round(4)
+                                
+                                # Create heatmap
+                                fig, ax = plt.subplots(figsize=(10, 8))
+                                im = ax.imshow(cov_display.values, cmap='RdBu_r', aspect='auto')
+                                
+                                # Set ticks
+                                ax.set_xticks(np.arange(len(cov_display.columns)))
+                                ax.set_yticks(np.arange(len(cov_display.index)))
+                                ax.set_xticklabels(cov_display.columns, rotation=45, ha='right')
+                                ax.set_yticklabels(cov_display.index)
+                                
+                                # Add colorbar
+                                plt.colorbar(im)
+                                
+                                # Add text annotations
+                                for i in range(len(cov_display.index)):
+                                    for j in range(len(cov_display.columns)):
+                                        text = ax.text(j, i, f'{cov_display.iloc[i, j]:.3f}',
+                                                     ha="center", va="center", color="black", fontsize=8)
+                                
+                                ax.set_title("Covariance Matrix Heatmap")
+                                plt.tight_layout()
+                                st.pyplot(fig)
+                                
+                                # Also show as dataframe
+                                st.dataframe(cov_display, use_container_width=True)
+                            
+                            # Model insights
+                            with st.expander("📚 Treynor-Black Model Insights"):
+                                st.markdown("""
+                                **About the Treynor-Black Model:**
+                                
+                                The Treynor-Black model is a portfolio optimization approach that combines:
+                                - **Active portfolio:** Stocks with positive alpha (expected excess returns)
+                                - **Passive portfolio:** Market index (VTI in this case)
+                                
+                                **Key Components:**
+                                
+                                1. **Alpha (α):** Expected excess return over the market
+                                2. **Beta (β):** Systematic risk relative to the market
+                                3. **MSE:** Mean Squared Error from regression (unsystematic risk)
+                                4. **Alpha/MSE:** Information ratio used for weighting
+                                
+                                **Optimal Weight Formula:**
+                                - Weight ∝ Alpha / MSE (higher alpha and lower residual risk = higher weight)
+                                - Weights are normalized to sum to 1.0
+                                
+                                **Interpretation:**
+                                - Stocks with higher alpha/MSE ratios receive larger allocations
+                                - The model favors stocks with consistent outperformance (high alpha, low MSE)
+                                - Negative or zero weights indicate stocks that should not be held
+                                """)
+                        else:
+                            st.warning("⚠️ Unable to calculate Treynor-Black weights. Insufficient data or no valid stocks found.")
+                else:
+                    st.warning("⚠️ Portfolio tickers not found in results.")
             else:
                 st.warning("⚠️ No allocation data available for the selected period.")
         
