@@ -493,7 +493,9 @@ def process_smif_data(transaction_file, income_file):
         inception_nav_combined = (1+inception_combined).cumprod()
         
         # Class period analysis  
-        class_combined = class_returns_filtered.join(df_rtn.loc[class_returns_filtered.index], how='outer')
+        # Use reindex to align df_rtn with class_returns_filtered, filling missing values with 0
+        df_rtn_reindexed = df_rtn.reindex(class_returns_filtered.index, fill_value=0)
+        class_combined = class_returns_filtered.join(df_rtn_reindexed, how='outer')
         class_combined = class_combined.iloc[1:, :] if len(class_combined) > 1 else class_combined  # Start from second day
         class_combined = class_combined.fillna(0)
         class_nav_combined = (1+class_combined).cumprod()
