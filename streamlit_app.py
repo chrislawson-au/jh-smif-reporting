@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 import matplotlib.pyplot as plt
-import statsmodels.api as sm
+from scipy import stats
 import io
 import base64
 from datetime import datetime
@@ -236,16 +236,21 @@ def calculate_treynor_black_weights(port_mkts, years=5):
             continue
         
         # Run regression
-        X = sm.add_constant(aligned_data['vti'])
-        y = aligned_data['stock']
+        x = aligned_data['vti'].values
+        y = aligned_data['stock'].values
         
         try:
-            model = sm.OLS(y, X).fit()
+            # Use scipy's linregress for simple linear regression
+            slope, intercept, r_value, p_value, std_err = stats.linregress(x, y)
             
             # Extract statistics
-            alpha = model.params[0] * 12  # Annualize alpha (monthly to annual)
-            beta = model.params[1]
-            mse = model.mse_resid  # Mean squared error of residuals
+            alpha = intercept * 12  # Annualize alpha (monthly to annual)
+            beta = slope
+            
+            # Calculate MSE from residuals
+            y_pred = intercept + slope * x
+            residuals = y - y_pred
+            mse = np.mean(residuals ** 2)
             
             # Calculate alpha/MSE ratio
             alpha_mse = alpha / mse if mse > 0 else 0
@@ -872,9 +877,9 @@ def main():
                 ax.scatter(x_data, y_data, alpha=0.6)
                 
                 # Fit regression line
-                X = sm.add_constant(x_data)
-                model = sm.OLS(y_data, X).fit()
-                ax.plot(x_data, model.fittedvalues, 'r-', linewidth=2, label=f'Alpha: {model.params[0]:.4f}')
+                slope, intercept, r_value, p_value, std_err = stats.linregress(x_data, y_data)
+                fitted_values = intercept + slope * x_data
+                ax.plot(x_data, fitted_values, 'r-', linewidth=2, label=f'Alpha: {intercept:.4f}')
                 
                 ax.set_xlabel('VTI Returns')
                 ax.set_ylabel('SMIF Returns')
