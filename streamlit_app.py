@@ -605,7 +605,11 @@ def main():
                 },
                 'portfolio_summary': {
                     'tickers': [],
-                    'num_positions': 0
+                    'num_positions': 0,
+                    'date_range': {
+                        'start': None,
+                        'end': None
+                    }
                 }
             }
             # Update portfolio summary from results if available
@@ -613,6 +617,12 @@ def main():
                 if 'port_mkts' in st.session_state['results']:
                     metadata['portfolio_summary']['tickers'] = st.session_state['results']['port_mkts']
                     metadata['portfolio_summary']['num_positions'] = len(st.session_state['results']['port_mkts'])
+                    
+                    # Add date range from returns data
+                    if 'returns' in st.session_state['results'] and not st.session_state['results']['returns'].empty:
+                        returns_data = st.session_state['results']['returns']
+                        metadata['portfolio_summary']['date_range']['start'] = returns_data.index[0].isoformat()
+                        metadata['portfolio_summary']['date_range']['end'] = returns_data.index[-1].isoformat()
         else:
             metadata = None
     else:
