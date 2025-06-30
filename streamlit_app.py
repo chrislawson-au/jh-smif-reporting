@@ -474,13 +474,15 @@ def process_smif_data(transaction_file, income_file):
         progress_bar.progress(0.95)
         
         # Inception-to-date analysis
-        inception_combined = inception_returns.join(df_rtn)
+        inception_combined = inception_returns.join(df_rtn, how='outer')
         inception_combined = inception_combined.iloc[1:, :]  # Start from second day
+        inception_combined = inception_combined.fillna(0)
         inception_nav_combined = (1+inception_combined).cumprod()
         
         # Class period analysis  
-        class_combined = class_returns_filtered.join(df_rtn.loc[class_returns_filtered.index])
+        class_combined = class_returns_filtered.join(df_rtn.loc[class_returns_filtered.index], how='outer')
         class_combined = class_combined.iloc[1:, :] if len(class_combined) > 1 else class_combined  # Start from second day
+        class_combined = class_combined.fillna(0)
         class_nav_combined = (1+class_combined).cumprod()
         
         # Create masks for positions, weights, and market values (which have different indices)
