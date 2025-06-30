@@ -622,11 +622,11 @@ def main():
                     metadata['portfolio_summary']['tickers'] = st.session_state['results']['port_mkts']
                     metadata['portfolio_summary']['num_positions'] = len(st.session_state['results']['port_mkts'])
                     
-                    # Add date range from returns data
-                    if 'returns' in st.session_state['results'] and not st.session_state['results']['returns'].empty:
-                        returns_data = st.session_state['results']['returns']
-                        metadata['portfolio_summary']['date_range']['start'] = returns_data.index[0].isoformat()
-                        metadata['portfolio_summary']['date_range']['end'] = returns_data.index[-1].isoformat()
+                    # Add date range from portfolio_summary data
+                    if 'portfolio_summary' in st.session_state['results'] and not st.session_state['results']['portfolio_summary'].empty:
+                        portfolio_data = st.session_state['results']['portfolio_summary']
+                        metadata['portfolio_summary']['date_range']['start'] = portfolio_data.index[0].isoformat()
+                        metadata['portfolio_summary']['date_range']['end'] = portfolio_data.index[-1].isoformat()
         else:
             metadata = None
     else:

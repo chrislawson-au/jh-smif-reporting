@@ -44,8 +44,8 @@ def save_processed_data(results, upload_info):
             "num_positions": len(results.get("port_mkts", [])),
             "tickers": results.get("port_mkts", []),
             "date_range": {
-                "start": results.get("returns", pd.DataFrame()).index.min().isoformat() if not results.get("returns", pd.DataFrame()).empty else None,
-                "end": results.get("returns", pd.DataFrame()).index.max().isoformat() if not results.get("returns", pd.DataFrame()).empty else None
+                "start": results.get("portfolio_summary", pd.DataFrame()).index.min().isoformat() if not results.get("portfolio_summary", pd.DataFrame()).empty else None,
+                "end": results.get("portfolio_summary", pd.DataFrame()).index.max().isoformat() if not results.get("portfolio_summary", pd.DataFrame()).empty else None
             }
         }
     }
