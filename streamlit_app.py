@@ -565,6 +565,11 @@ def main():
                             st.session_state['results'] = results
                             st.session_state['data_source'] = 'github'
                             st.session_state['github_metadata'] = github_metadata
+                            # Store file sizes for metadata display
+                            st.session_state['github_file_sizes'] = {
+                                'transaction': len(transaction_data),
+                                'income': len(income_data)
+                            }
                             logger.info("Successfully loaded data from GitHub")
                     else:
                         st.warning("No data found in GitHub repository. Please upload new files.")
@@ -583,11 +588,31 @@ def main():
         github_metadata = st.session_state['github_metadata']
         if github_metadata and 'last_upload' in github_metadata:
             # Convert GitHub metadata to match local format
+            # Create a full metadata structure that matches what the app expects
             metadata = {
                 'last_updated': github_metadata['last_upload']['updated_at'],
                 'uploaded_by': github_metadata['last_upload']['uploader'],
-                'data_source': 'GitHub Repository'
+                'data_source': 'GitHub Repository',
+                'file_info': {
+                    'transaction_file': {
+                        'name': 'transaction_data.xlsx',
+                        'size': st.session_state.get('github_file_sizes', {}).get('transaction', 0)
+                    },
+                    'income_file': {
+                        'name': 'income_data.xlsx', 
+                        'size': st.session_state.get('github_file_sizes', {}).get('income', 0)
+                    }
+                },
+                'portfolio_summary': {
+                    'tickers': [],
+                    'num_positions': 0
+                }
             }
+            # Update portfolio summary from results if available
+            if 'results' in st.session_state:
+                if 'port_mkts' in st.session_state['results']:
+                    metadata['portfolio_summary']['tickers'] = st.session_state['results']['port_mkts']
+                    metadata['portfolio_summary']['num_positions'] = len(st.session_state['results']['port_mkts'])
         else:
             metadata = None
     else:
@@ -665,7 +690,7 @@ def main():
                 data_manager.delete_data()
             
             # Clear session state
-            for key in ['results', 'data_source', 'github_metadata']:
+            for key in ['results', 'data_source', 'github_metadata', 'github_file_sizes']:
                 if key in st.session_state:
                     del st.session_state[key]
             
