@@ -91,9 +91,9 @@ class GitHubStorage:
             # Archive current files if they exist
             self._archive_current_files()
             
-            # Prepare file contents
-            transaction_content = base64.b64encode(transaction_data).decode('utf-8')
-            income_content = base64.b64encode(income_data).decode('utf-8')
+            # Prepare file contents - PyGithub handles base64 encoding internally
+            transaction_content = transaction_data
+            income_content = income_data
             
             # Create commit message
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -162,7 +162,7 @@ class GitHubStorage:
             transaction_path = "data/current/transaction_data.xlsx"
             try:
                 transaction_file = self.repo.get_contents(transaction_path)
-                transaction_data = base64.b64decode(transaction_file.content)
+                transaction_data = transaction_file.decoded_content
             except UnknownObjectException:
                 logger.warning(f"Transaction file not found: {transaction_path}")
                 transaction_data = None
@@ -171,7 +171,7 @@ class GitHubStorage:
             income_path = "data/current/income_data.xlsx"
             try:
                 income_file = self.repo.get_contents(income_path)
-                income_data = base64.b64decode(income_file.content)
+                income_data = income_file.decoded_content
             except UnknownObjectException:
                 logger.warning(f"Income file not found: {income_path}")
                 income_data = None
@@ -254,9 +254,9 @@ class GitHubStorage:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             archive_dir = f"data/archive/{timestamp}"
             
-            # Get file contents
-            transaction_content = transaction_file.content
-            income_content = income_file.content
+            # Get file contents - use decoded_content for binary files
+            transaction_content = transaction_file.decoded_content
+            income_content = income_file.decoded_content
             
             # Create archived files
             self.repo.create_file(
@@ -322,7 +322,7 @@ class GitHubStorage:
         """Get metadata from repository."""
         try:
             metadata_file = self.repo.get_contents("metadata.json")
-            metadata_content = base64.b64decode(metadata_file.content).decode('utf-8')
+            metadata_content = metadata_file.decoded_content.decode('utf-8')
             return json.loads(metadata_content)
         except Exception as e:
             logger.error(f"Error getting metadata: {e}")
