@@ -360,11 +360,20 @@ def process_smif_data(transaction_file, income_file):
         # Process transactions
         status_text.text('Processing transactions...')
         progress_bar.progress(0.7)
-        reporting_dates = pd.DatetimeIndex(df_rtn['2023-09-14':].index)
         
+        # First, process smifTrade to get actual transaction dates
         smifTrade = smifReport[['D-TRADE','Share/Par Value','A-PRIN-TRD-BSE','Ticker/Option Symbol number']]
         smifTrade = smifTrade.groupby(['D-TRADE','Ticker/Option Symbol number']).apply('sum')
         smifTrade = smifTrade.reset_index(level='Ticker/Option Symbol number')
+        
+        # Get the actual transaction date range from the data
+        transaction_dates = pd.to_datetime(smifTrade.index).unique()
+        min_date = max(transaction_dates.min(), pd.to_datetime('2023-09-14'))
+        max_date = transaction_dates.max()
+        
+        # Create reporting dates based on actual transaction range
+        # This ensures we show the full date range of the transactions
+        reporting_dates = pd.date_range(start=min_date, end=max_date, freq='B')
         
         trades = pd.DataFrame(0.0, columns=portMkts, index=reporting_dates)
         
