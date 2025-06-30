@@ -351,7 +351,9 @@ def process_smif_data(transaction_file, income_file):
                 df_splits[market] = splits_data
             progress_bar.progress(0.5 + (i / len(portMkts)) * 0.2)
         
-        df_rtn = df_rtn.loc[np.isnan(df_rtn.sum(axis=1, skipna=False)) == False, :]
+        # Only keep dates where we have data for at least one stock
+        # This prevents losing all data if one stock has missing values
+        df_rtn = df_rtn.dropna(how='all')
         df_close = df_close.loc[df_rtn.index, :]
         df_splits.fillna(0, inplace=True)
         
@@ -927,11 +929,11 @@ def main():
                 # Display regression stats
                 col1, col2, col3 = st.columns(3)
                 with col1:
-                    st.metric("Alpha", f"{model.params[0]:.4f}")
+                    st.metric("Alpha", f"{intercept:.4f}")
                 with col2:
-                    st.metric("Beta", f"{model.params[1]:.4f}")
+                    st.metric("Beta", f"{slope:.4f}")
                 with col3:
-                    st.metric("R-squared", f"{model.rsquared:.3f}")
+                    st.metric("R-squared", f"{r_value**2:.3f}")
             else:
                 st.warning("⚠️ Insufficient data for regression analysis in the selected period (minimum 5 observations required).")
         
