@@ -10,6 +10,12 @@ from datetime import datetime
 import hashlib
 import data_manager
 from data_exporter import SMIFDataExporter
+import logging
+from github_storage import GitHubStorage, get_cached_data_from_github, clear_github_cache
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Configure page
 st.set_page_config(
@@ -34,6 +40,11 @@ try:
         CLASS_SEMESTER = st.secrets['class_period'].get('CLASS_SEMESTER', 'Current Semester')
         CLASS_INITIAL_VALUE = st.secrets['class_period'].get('CLASS_INITIAL_VALUE', INITIAL_PORTFOLIO_VALUE)
         CLASS_BENCHMARK = st.secrets['class_period'].get('CLASS_BENCHMARK', 'VTI')
+        
+        # GitHub storage configuration
+        GITHUB_TOKEN = st.secrets.get('github', {}).get('GITHUB_TOKEN', None)
+        GITHUB_DATA_REPO = st.secrets.get('github', {}).get('DATA_REPO', None)
+        USE_GITHUB_STORAGE = GITHUB_TOKEN is not None and GITHUB_DATA_REPO is not None
     else:
         # Fallback to config.py for legacy support (will be deprecated)
         from config import ALLOWED_EMAILS, CLASS_PASSWORD, APP_TITLE, INITIAL_PORTFOLIO_VALUE
@@ -44,6 +55,11 @@ try:
         CLASS_SEMESTER = 'Current Semester'
         CLASS_INITIAL_VALUE = INITIAL_PORTFOLIO_VALUE
         CLASS_BENCHMARK = 'VTI'
+        
+        # GitHub storage disabled in legacy mode
+        GITHUB_TOKEN = None
+        GITHUB_DATA_REPO = None
+        USE_GITHUB_STORAGE = False
 except (ImportError, KeyError):
     # Demo configuration for testing
     st.error("⚠️ Configuration not found! Please set up .streamlit/secrets.toml or config.py")
@@ -58,6 +74,11 @@ except (ImportError, KeyError):
     CLASS_SEMESTER = 'Demo Semester'
     CLASS_INITIAL_VALUE = INITIAL_PORTFOLIO_VALUE
     CLASS_BENCHMARK = 'VTI'
+    
+    # GitHub storage disabled in demo mode
+    GITHUB_TOKEN = None
+    GITHUB_DATA_REPO = None
+    USE_GITHUB_STORAGE = False
 
 def check_password():
     """Returns True if user has correct email and password."""
@@ -521,11 +542,52 @@ def main():
     st.markdown("---")
     
     # Load existing data if available
-    if 'results' not in st.session_state and data_manager.data_exists():
-        st.session_state['results'] = data_manager.load_processed_data()
+    if 'results' not in st.session_state:
+        # Try GitHub storage first
+        if USE_GITHUB_STORAGE:
+            try:
+                # Show loading indicator
+                with st.spinner('Loading data from GitHub...'):
+                    transaction_data, income_data, github_metadata = get_cached_data_from_github(GITHUB_TOKEN, GITHUB_DATA_REPO)
+                    
+                    if transaction_data and income_data:
+                        # Process the data
+                        transaction_file = io.BytesIO(transaction_data)
+                        income_file = io.BytesIO(income_data)
+                        
+                        results = process_smif_data(transaction_file, income_file)
+                        if results:
+                            st.session_state['results'] = results
+                            st.session_state['data_source'] = 'github'
+                            st.session_state['github_metadata'] = github_metadata
+                            logger.info("Successfully loaded data from GitHub")
+                    else:
+                        st.warning("No data found in GitHub repository. Please upload new files.")
+            except Exception as e:
+                logger.error(f"Error loading from GitHub: {e}")
+                st.error(f"Error loading from GitHub: {str(e)}")
+        
+        # Fall back to local data manager if no GitHub data
+        if 'results' not in st.session_state and data_manager.data_exists():
+            st.session_state['results'] = data_manager.load_processed_data()
+            st.session_state['data_source'] = 'local'
     
     # Data overview section
-    metadata = data_manager.get_metadata()
+    # Use GitHub metadata if available, otherwise local metadata
+    if st.session_state.get('data_source') == 'github' and 'github_metadata' in st.session_state:
+        github_metadata = st.session_state['github_metadata']
+        if github_metadata and 'last_upload' in github_metadata:
+            # Convert GitHub metadata to match local format
+            metadata = {
+                'last_updated': github_metadata['last_upload']['updated_at'],
+                'uploaded_by': github_metadata['last_upload']['uploader'],
+                'data_source': 'GitHub Repository'
+            }
+        else:
+            metadata = None
+    else:
+        metadata = data_manager.get_metadata()
+    
     if metadata:
         st.header("📊 Current Data Overview")
         
@@ -540,16 +602,23 @@ def main():
             )
         
         with col2:
-            st.metric(
-                "Portfolio Positions", 
-                metadata['portfolio_summary']['num_positions']
-            )
+            if 'results' in st.session_state and 'port_mkts' in st.session_state['results']:
+                num_positions = len(st.session_state['results']['port_mkts'])
+            else:
+                num_positions = metadata.get('portfolio_summary', {}).get('num_positions', 'N/A')
+            st.metric("Portfolio Positions", num_positions)
         
         with col3:
             st.metric(
                 "Uploaded By",
                 metadata['uploaded_by'].split('@')[0] if '@' in metadata['uploaded_by'] else metadata['uploaded_by']
             )
+        
+        # Show data source indicator if using GitHub
+        if USE_GITHUB_STORAGE and st.session_state.get('data_source') == 'github':
+            st.info("📦 Data loaded from GitHub repository")
+        elif st.session_state.get('data_source') == 'local':
+            st.info("💾 Data loaded from local storage")
         
         # File details in expander
         with st.expander("📋 Data Details"):
@@ -583,9 +652,18 @@ def main():
         
         # Add option to clear data
         if st.button("🗑️ Clear Saved Data", help="Remove all saved data and start fresh"):
-            data_manager.delete_data()
-            if 'results' in st.session_state:
-                del st.session_state['results']
+            if USE_GITHUB_STORAGE:
+                # Clear GitHub cache
+                clear_github_cache()
+            else:
+                # Clear local data
+                data_manager.delete_data()
+            
+            # Clear session state
+            for key in ['results', 'data_source', 'github_metadata']:
+                if key in st.session_state:
+                    del st.session_state[key]
+            
             st.success("Data cleared successfully!")
             st.rerun()
         
@@ -626,9 +704,48 @@ def main():
                     
                     if results:
                         # Save data for persistence
-                        data_manager.save_processed_data(results, upload_info)
-                        st.session_state['results'] = results
-                        st.success("✅ Reports generated and saved successfully!")
+                        if USE_GITHUB_STORAGE:
+                            try:
+                                # Save to GitHub
+                                storage = GitHubStorage(GITHUB_TOKEN, GITHUB_DATA_REPO)
+                                
+                                # Read file contents
+                                transaction_file.seek(0)
+                                transaction_data = transaction_file.read()
+                                income_file.seek(0)
+                                income_data = income_file.read()
+                                
+                                # Upload to GitHub
+                                success = storage.upload_files(
+                                    transaction_data,
+                                    income_data,
+                                    st.session_state.get('user_email', 'unknown')
+                                )
+                                
+                                if success:
+                                    # Clear cache to force reload
+                                    clear_github_cache()
+                                    st.session_state['results'] = results
+                                    st.session_state['data_source'] = 'github'
+                                    st.success("✅ Reports generated and saved to GitHub successfully!")
+                                    logger.info("Data saved to GitHub successfully")
+                                else:
+                                    st.error("Failed to save to GitHub. Data processed but not persisted.")
+                            except Exception as e:
+                                logger.error(f"GitHub upload error: {e}")
+                                st.error(f"GitHub upload error: {str(e)}")
+                                # Fall back to local storage
+                                data_manager.save_processed_data(results, upload_info)
+                                st.session_state['results'] = results
+                                st.session_state['data_source'] = 'local'
+                                st.warning("Data saved locally as fallback.")
+                        else:
+                            # Use local data manager
+                            data_manager.save_processed_data(results, upload_info)
+                            st.session_state['results'] = results
+                            st.session_state['data_source'] = 'local'
+                            st.success("✅ Reports generated and saved successfully!")
+                        
                         st.balloons()
     
     # Display results section
