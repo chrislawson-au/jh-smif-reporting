@@ -410,7 +410,11 @@ def process_smif_data(transaction_file, income_file):
         # Calculate market values and performance
         status_text.text('Calculating performance metrics...')
         progress_bar.progress(0.8)
-        MktClose = df_close.loc[positions.index, :]
+        
+        # Reindex df_close to match positions index, forward filling missing values
+        # This handles cases where market data ends before transaction dates
+        MktClose = df_close.reindex(positions.index, method='ffill')
+        
         MktValue = pd.DataFrame(positions[portMkts].values * MktClose[portMkts].values, 
                                columns=portMkts, index=positions.index)
         
